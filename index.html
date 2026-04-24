@@ -749,7 +749,7 @@ async function startSession() {
     const tokenRes = await fetch('https://api.liveavatar.com/v1/sessions/token', {
       method: 'POST',
       headers: {
-        'X-API-KEY': 'c7fc4a27-83bc-4a45-aab2-dcd35fc24202' ,
+        'X-API-KEY': HEYGEN_API_KEY ,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
