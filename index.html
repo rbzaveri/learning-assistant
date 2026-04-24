@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI Learning Assistant</title>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/@heygen/streaming-avatar@latest/dist/streaming-avatar.umd.js"></script>
+<script src="https://unpkg.com/@heygen/liveavatar-web-sdk@latest/dist/liveavatar-web-sdk.umd.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -644,6 +644,7 @@ Guidelines:
 // ═══════════════════════════════════════════
 let avatar = null;
 let sessionData = null;
+let sessionId = null;
 let isConnected = false;
 let isProcessing = false;
 let isRecording = false;
@@ -726,22 +727,40 @@ async function startSession() {
   document.getElementById('startBtn').disabled = true;
 
   try {
-    // 1. Get a streaming token from HeyGen
-    const tokenRes = await fetch('https://api.heygen.com/v1/streaming.create_token', {
+    // 1. Get a session token from LiveAvatar
+    const tokenRes = await fetch('https://api.liveavatar.com/v1/sessions/token', {
       method: 'POST',
       headers: {
-        'x-api-key': HEYGEN_API_KEY,
+        'X-API-KEY': HEYGEN_API_KEY,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        mode: 'LITE',
+        avatar_id: AVATAR_ID,
+        video_settings: { encoding: 'VP8', quality: 'high' }
+      })
+    });
+    const tokenData = await tokenRes.json();
+    if (!tokenData.data?.session_token) throw new Error('Failed to get LiveAvatar token: ' + (tokenData.message || tokenRes.status));
+
+    const sessionToken = tokenData.data.session_token;
+    sessionId = tokenData.data.session_id;
+
+    // 2. Start the session
+    const startRes = await fetch('https://api.liveavatar.com/v1/sessions/start', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + sessionToken,
         'Content-Type': 'application/json'
       }
     });
-    const tokenData = await tokenRes.json();
-    if (!tokenData.data?.token) throw new Error('Failed to get HeyGen token');
+    const startData = await startRes.json();
+    if (!startData.data?.livekit_url) throw new Error('Failed to start session: ' + (startData.message || startRes.status));
 
-    // 2. Initialise the streaming avatar SDK
-    avatar = new HeyGen.StreamingAvatar({ token: tokenData.data.token });
+    // 3. Initialise the LiveAvatar Web SDK with LiveKit
+    avatar = new LiveAvatarWebSDK.LiveAvatarSession(sessionToken, { voiceChat: false });
 
-    // 3. Listen for avatar events
-    avatar.on(HeyGen.StreamingEvents.STREAM_READY, (stream) => {
+    avatar.on('stream_ready', (stream) => {
       const video = document.getElementById('avatarVideo');
       video.srcObject = stream;
       video.classList.add('active');
@@ -752,33 +771,24 @@ async function startSession() {
       setStatus('Session active — ask your question');
     });
 
-    avatar.on(HeyGen.StreamingEvents.AVATAR_START_TALKING, () => setSpeaking(true));
-    avatar.on(HeyGen.StreamingEvents.AVATAR_STOP_TALKING, () => { setSpeaking(false); isProcessing = false; });
+    avatar.on('avatar_start_talking', () => setSpeaking(true));
+    avatar.on('avatar_stop_talking', () => { setSpeaking(false); isProcessing = false; });
+    avatar.on('disconnected', () => handleDisconnect());
 
-    avatar.on(HeyGen.StreamingEvents.STREAM_DISCONNECTED, () => {
-      handleDisconnect();
-    });
-
-    // 4. Start the session
-    sessionData = await avatar.createStartAvatar({
-      avatarName: AVATAR_ID,
-      quality: 'high',
-      language: 'en'
-    });
-
+    await avatar.start();
     setStatus('Connecting stream...', 'active');
 
   } catch (err) {
     setStatus('Connection failed: ' + err.message, 'error');
     setConnection('disconnected');
     document.getElementById('startBtn').disabled = false;
-    console.error('HeyGen session error:', err);
+    console.error('LiveAvatar session error:', err);
   }
 }
 
 async function stopSession() {
   if (avatar) {
-    try { await avatar.stopAvatar(); } catch (_) {}
+    try { await avatar.stop(); } catch (_) {}
   }
   handleDisconnect();
 }
@@ -842,11 +852,7 @@ async function sendToAvatar(userQuestion) {
     addToTranscript('assistant', reply);
     setStatus('Avatar speaking...', 'active');
 
-    await avatar.speak({
-      text: reply,
-      taskType: HeyGen.TaskType.REPEAT,
-      taskMode: HeyGen.TaskMode.SYNC
-    });
+    await avatar.speak({ text: reply });
 
     setStatus('Session active — ask your question');
   } catch (err) {
